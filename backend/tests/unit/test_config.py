@@ -26,6 +26,34 @@ def _settings(**overrides) -> Settings:
     return Settings(**{**base, **overrides})
 
 
+class TestDatabaseUrlDriverNormalization:
+    """A managed Postgres provider hands out a bare postgresql:// string;
+    SQLAlchemy's default dialect for that scheme is psycopg2, which this
+    project does not install (it installs psycopg v3). Without normalizing
+    the scheme, a correct connection string fails at startup with
+    ModuleNotFoundError: No module named 'psycopg2'."""
+
+    def test_bare_postgresql_scheme_gets_the_psycopg_driver(self):
+        s = _settings(database_url="postgresql://u:p@ep-example.neon.tech/db?sslmode=require")
+        assert s.database_url == "postgresql+psycopg://u:p@ep-example.neon.tech/db?sslmode=require"
+
+    def test_heroku_style_postgres_scheme_gets_the_psycopg_driver(self):
+        s = _settings(database_url="postgres://u:p@host:5432/db")
+        assert s.database_url == "postgresql+psycopg://u:p@host:5432/db"
+
+    def test_an_already_qualified_driver_is_left_alone(self):
+        s = _settings(database_url="postgresql+psycopg://u:p@host:5432/db")
+        assert s.database_url == "postgresql+psycopg://u:p@host:5432/db"
+
+    def test_query_params_survive_normalization(self):
+        s = _settings(
+            database_url="postgresql://u:p@host/db?sslmode=require&channel_binding=require"
+        )
+        assert s.database_url == (
+            "postgresql+psycopg://u:p@host/db?sslmode=require&channel_binding=require"
+        )
+
+
 class TestDefaults:
     def test_defaults_match_the_product_spec(self):
         s = _settings()

@@ -122,6 +122,27 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     # ------------------------------------------------------------- validation
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_database_url_driver(cls, v: str) -> str:
+        """Every managed Postgres provider (Neon, Render, Heroku, Supabase...)
+        hands out a bare `postgresql://` or `postgres://` connection string,
+        which is a real value SQLAlchemy accepts -- just not with this
+        project's driver. This project installs `psycopg` (v3, see
+        pyproject.toml), not `psycopg2`, and SQLAlchemy's default dialect for
+        an unqualified `postgresql://` scheme is psycopg2. Without this
+        normalization, pasting a provider's connection string verbatim into
+        DATABASE_URL fails at startup with `ModuleNotFoundError: No module
+        named 'psycopg2'` -- a confusing error for a correct connection
+        string. A URL that already names a driver (`+psycopg`, `+psycopg2`,
+        an explicit test driver) is left alone.
+        """
+        if v.startswith("postgres://"):
+            v = "postgresql://" + v[len("postgres://") :]
+        if v.startswith("postgresql://"):
+            v = "postgresql+psycopg://" + v[len("postgresql://") :]
+        return v
+
     @field_validator("market_timezone")
     @classmethod
     def _timezone_must_resolve(cls, v: str) -> str:
