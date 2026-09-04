@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -W ignore -c ' *)",
+      "Bash(.venv/bin/python -m pytest tests/unit/test_mock_providers.py tests/unit/test_provider_factory.py -q)"
+    ]
+  }
+}

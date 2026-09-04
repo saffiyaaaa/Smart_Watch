@@ -1,0 +1,26 @@
+# Secrets -- .env.example is the committed contract, .env never is.
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.local
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

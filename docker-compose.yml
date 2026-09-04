@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: smw_postgres
+    environment:
+      POSTGRES_USER: smw
+      POSTGRES_PASSWORD: smw_dev_password
+      POSTGRES_DB: smart_market_watchlist
+    # Host port 5433, not 5432: a local Postgres commonly already owns 5432.
+    # The container still speaks 5432 internally.
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smw -d smart_market_watchlist"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: smw_redis
+    # Optional. Nothing in phases 0-11 requires Redis; it is provisioned so the
+    # Phase 12 quote cache can be switched on without changing infrastructure.
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:

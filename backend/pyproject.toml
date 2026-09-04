@@ -1,0 +1,78 @@
+[project]
+name = "smart-market-watchlist-backend"
+version = "0.1.0"
+description = "API and domain logic for the Smart Market Watchlist"
+requires-python = ">=3.11,<3.14"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "email-validator>=2.2",
+    "python-jose[cryptography]>=3.3",
+    # bcrypt directly, not passlib: this system uses exactly one hashing
+    # scheme, so passlib's multi-scheme abstraction would add an unmaintained
+    # dependency for no benefit.
+    "bcrypt>=4.0",
+    "python-multipart>=0.0.12",
+    "httpx>=0.27",
+    "yfinance>=0.2.50",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "freezegun>=1.5",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM", "C4", "RUF"]
+ignore = [
+    "B008",  # FastAPI's Depends() in defaults is the framework's idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+# InvalidProviderData / SymbolNotFound are named to match the exact terms used
+# in docs/product-spec.md and the project brief's own failure-mode language;
+# renaming to satisfy the Error-suffix convention would make the code and the
+# spec disagree on vocabulary for no real benefit.
+"app/infrastructure/providers/exceptions.py" = ["N818"]
+# "x" and "->" are ASCII replacements, but "×" and "→" are exactly what
+# docs/product-spec.md section 4 uses in its own worked examples ("Volume
+# 3.1x the 20-day average", "$180.40 -> $191.58"). Evidence strings are
+# user-facing text, not identifiers, so RUF001's homoglyph-confusion concern
+# does not apply here.
+"app/domain/changes/scoring.py" = ["RUF001"]
+"tests/unit/test_scoring.py" = ["RUF001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# "." for app.*; ".." (the repo root) so worker.* -- a sibling package outside
+# backend/ -- is importable from tests the same way it is at runtime via
+# `python -m worker.scheduler` from the repo root.
+pythonpath = [".", ".."]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires a live PostgreSQL database",
+    "network: reaches a real external market data provider",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
