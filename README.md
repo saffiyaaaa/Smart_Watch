@@ -146,9 +146,6 @@ venv/bin/python -m ruff format --check .
 cd frontend && npm run build                     # typecheck + production build
 cd frontend && npm run lint
 ```
-
-
-
 ## Layout
 
 ```
