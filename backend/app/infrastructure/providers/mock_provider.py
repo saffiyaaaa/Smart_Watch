@@ -138,10 +138,22 @@ class StaleProvider(MarketDataProvider):
     """Every quote is old enough to classify as STALE under the default
     freshness thresholds (docs/product-spec.md section 2), so ingestion and
     scoring's stale-data handling can be tested without waiting for real data
-    to age."""
+    to age.
+
+    STALE_AGE must exceed not just the stale threshold but the largest gap
+    freshness_reference can introduce: while the market is closed, staleness
+    is measured from the most recent session close, not from "now" (see
+    app/domain/market/freshness.py) -- over a weekend that reference can sit
+    up to ~65.5 hours behind the actual current time. A `now - 2h` offset
+    reliably cleared the 15-minute threshold on any weekday, but on a weekend
+    "2 hours ago" is still *after* Friday's close, the actual reference point
+    -- producing a negative age and classifying the quote FRESH instead of
+    STALE. Four days safely exceeds that gap under any real calendar
+    (including a long weekend) with room to spare.
+    """
 
     source = "stale"
-    STALE_AGE = timedelta(hours=2)
+    STALE_AGE = timedelta(days=4)
 
     async def get_quote(self, symbol: str) -> Quote:
         stale_time = datetime.now(UTC) - self.STALE_AGE

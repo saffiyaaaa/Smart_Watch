@@ -85,3 +85,67 @@ Added during this review:
 | Request size | **Added during this review.** Every payload this API accepts is a small JSON object; a `Content-Length` above `MAX_REQUEST_BODY_BYTES` (default 1 MB) is now rejected with `413` before the body is read, via `MaxBodySizeMiddleware`. This is a backstop, not the primary defense — a reverse proxy or load balancer in front of this API in a real deployment should reject an oversized request before it reaches this process at all. See `app/api/middleware.py`; proven in `integration/test_auth_api.py::TestRequestSizeLimit`. |
 | Dependency audit | `pip-audit` flags one transitive vulnerability: `ecdsa` 0.19.2 (pulled in unconditionally by `python-jose`, regardless of the `[cryptography]` extra), a known, upstream-acknowledged timing side-channel in the pure-Python ECDSA implementation with no fixed version available (the maintainers consider constant-time guarantees out of scope for that implementation). **Not currently exploitable in this system**: `JWT_ALGORITHM` defaults to `HS256` (HMAC), which never touches the ECDSA code path. **Accepted risk, monitored**: do not set `JWT_ALGORITHM` to an ES* value until this is resolved upstream or `python-jose` is replaced; re-run `pip-audit` before any production deployment. |
 | Sensitive data in logs | No log call anywhere in `app/` or `worker/` includes a password, token, or full request body (`grep` for `logger\.` calls near those terms returns nothing) — every log call names an id, a symbol, or a status, never a credential. | Reviewed, no change needed. |
+
+## Deployment (Phase 14): three real failures, none of them in the test suite
+
+The failure-mode matrix above is what the *test suite* proves. Deploying to
+Vercel + Render + Neon surfaced three more failures that no unit or
+integration test could have caught, because each one is specific to real
+managed infrastructure a local Postgres container and a mock provider don't
+reproduce. Recorded here because "the tests all pass" and "the system
+survives contact with a real cloud deployment" are different claims, and
+conflating them is exactly how a reliability document becomes dishonest.
+
+| # | Failure | Root cause | Fix |
+|---|---|---|---|
+| 17 | `ModuleNotFoundError: No module named 'psycopg2'` on boot | Every managed Postgres provider hands out a bare `postgresql://` connection string; SQLAlchemy's default dialect for that scheme is psycopg2, which this project does not install (it installs psycopg v3). | `config.py`'s `_normalize_database_url_driver` rewrites `postgresql://`/`postgres://` to `postgresql+psycopg://` at settings load. See [design-decisions.md](design-decisions.md) #4. Regression-tested in `unit/test_config.py::TestDatabaseUrlDriverNormalization`. |
+| 18 | `/health` succeeded, `/ready` reported `database: error`, indefinitely | The persistent connection pool set its statement timeout via a startup-packet `options` parameter, which Neon's pooled endpoint (PgBouncer) silently refused to forward — while Alembic's one-off migration connection (no such parameter) connected to the identical endpoint successfully. | Set the timeout via a `SET statement_timeout = ...` command on connect instead — an ordinary query, not a startup parameter. See [design-decisions.md](design-decisions.md) #13. Regression-tested in `integration/test_session.py`, including a locked-in assertion that `connect_args` never reintroduces an `options` parameter. |
+| 19 | Every symbol except a handful showed "no market quote yet," indefinitely | The API's `/quote` endpoint only ever reads the database (decision #7, by design) — the worker is what populates it. Only the API web service was deployed; the worker was never deployed as its own service, so nothing was ever ingesting data for newly added symbols. | `worker/Dockerfile`, built from the repository root so it can include both `backend/app` and the sibling `worker/` package, deployed as a second, separate Render Background Worker service. See [design-decisions.md](design-decisions.md) #11. Verified locally before deploying: built the image, ran one ingestion cycle against real PostgreSQL with both `MockProvider` and the real `yfinance` provider, confirmed snapshots were persisted. |
+
+None of these are gaps in the failure-mode matrix or the test suite — rows
+1–16 above are about how the *running system* behaves once it is up; rows
+17–19 are about whether the system as *deployed* is the system that was
+*built*. The lesson generalizes: a docker-compose-based local environment
+and a suite of tests against a local PostgreSQL container do not exercise a
+managed provider's connection pooler, a split-service deployment topology,
+or a copy-pasted connection string's exact scheme — each of those needed a
+real deployment to surface, and each was fixed and verified against the real
+infrastructure it failed on, not just against the local test suite.
+
+## A test fixture that only failed on weekends
+
+One more finding, caught by the test suite itself rather than by deploying:
+`mock_provider.py`'s `StaleProvider` computed its quote's `market_timestamp`
+as `now - 2 hours`, intended to reliably classify as `STALE` under the
+15-minute threshold. It does — on a weekday. `classify_freshness` measures
+staleness from `now` only while the market is open; while it's closed, the
+reference point is the *most recent session close* (see
+`app/domain/market/freshness.py`'s `freshness_reference`), specifically so a
+perfectly good Friday-afternoon price doesn't read as degraded all weekend
+(product-spec.md §2). On a weekend, that reference can sit up to ~65.5 hours
+behind the real current time — comfortably more than the 2-hour offset the
+fixture assumed — so `now - 2h` was still *after* Friday's close, producing
+a negative age and classifying as `FRESH` instead of `STALE`.
+
+This surfaced mid-session, three tests deep
+(`test_ingestion.py::TestStaleDataIsMarkedNotHidden`,
+`test_change_detection_pipeline.py::TestStaleDataProducesADegradedEvent`),
+on the first weekend this codebase's test suite happened to run since the
+fixture was written — the exact "passes in CI for months, fails the first
+time someone runs it on a Saturday" shape of bug. Fixed by widening
+`STALE_AGE` to four days, comfortably exceeding the largest gap
+`freshness_reference` can introduce under any real calendar (including a
+long weekend), rather than by freezing time in the test (which would have
+hidden the fixture's actual assumption instead of correcting it). Verified
+by reproducing the failure against the old value and confirming the fix
+against the new one, not just by watching it pass once.
+
+The broader point for how testing was done in this project: a fixture using
+real wall-clock time (`datetime.now(UTC)`, as `StaleProvider` does) inherits
+every calendar-dependent edge case the *system* has to handle — which is
+appropriate when the fixture's job is to prove the system handles that edge
+case, but means the fixture itself has to be as careful about the calendar
+as the code it's testing. Fixtures that need a *specific* day (weekday
+arithmetic, trading-session boundaries) use a frozen constant instead — see
+`tests/fixtures/seed.py`'s `FIXED_NOW`, deliberately a Wednesday specifically
+so "previous session" arithmetic never crosses a weekend by accident.
