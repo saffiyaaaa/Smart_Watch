@@ -27,4 +27,10 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Migrate then serve, in that order, on every boot. `alembic upgrade head` is
+# idempotent -- a migration already applied is a no-op -- so this is safe to
+# run unconditionally rather than as a separate manual step a deployment can
+# forget. `exec` replaces this shell with uvicorn so it becomes PID 1 and
+# receives signals (SIGTERM on deploy/restart) directly, rather than losing
+# them to a shell process that never forwards them.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
