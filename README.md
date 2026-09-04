@@ -36,25 +36,7 @@ The full contract — every threshold, formula and failure behaviour — is in *
 | Local infra | Docker Compose | Postgres + Redis, reproducible from one command |
 | Deployment | Vercel (frontend) + Render (API + worker, Docker) + Neon (managed Postgres) | See [Deployment](#deployment) below |
 
-## Status
 
-Built phase by phase against [docs/product-spec.md](docs/product-spec.md). All 15 phases complete and deployed.
-
-- [x] **Phase 0** — Product contract
-- [x] **Phase 1** — Tooling and local infrastructure
-- [x] **Phase 2** — Database schema and persistence
-- [x] **Phase 3** — Auth and watchlist domain
-- [x] **Phase 4** — Market provider adapter
-- [x] **Phase 5** — Ingestion worker
-- [x] **Phase 6** — Change detection
-- [x] **Phase 7** — Attention scoring
-- [x] **Phase 8** — Last-seen state and change feed
-- [x] **Phase 9** — API completion and integration tests
-- [x] **Phase 10** — Frontend
-- [x] **Phase 11** — Reliability and concurrency
-- [x] **Phase 12** — Performance and scalability (worker concurrency, quote cache)
-- [x] **Phase 13** — Security review (rate limiting, request-size limits, dependency audit)
-- [x] **Phase 14** — Deployed: [see below](#deployment)
 
 ## Architecture
 
@@ -160,90 +142,12 @@ the worker needs both `backend/app` and the sibling `worker/` package in one
 image; `backend/`'s build context alone cannot reach outside it. See
 [design-decisions.md](docs/design-decisions.md) #11.
 
-### Option C — The live deployment
-
-See [Deployment](#deployment) below for the running instance and its topology.
-
-## Testing
-
-```bash
-cd backend && .venv/bin/python -m pytest -q      # 548 tests: unit + integration
-cd backend && .venv/bin/python -m ruff check .   # lint
-cd backend && .venv/bin/python -m ruff format --check .
+venv/bin/python -m ruff format --check .
 cd frontend && npm run build                     # typecheck + production build
 cd frontend && npm run lint
 ```
 
-**Why every integration test runs against real PostgreSQL, never SQLite:**
-almost everything worth testing here is PostgreSQL-specific — `ON CONFLICT
-DO NOTHING`, `DISTINCT ON`, `GREATEST()`'s NULL handling, JSONB, regex
-`CHECK` constraints, real `EXPLAIN` plans. A SQLite suite would pass while
-proving nothing about the database this system actually runs on.
 
-**The test pyramid, and what each layer is actually for:**
-
-| Layer | What it proves | Example |
-|---|---|---|
-| Unit (`tests/unit/`) | Pure domain logic — scoring, freshness, detection, retry backoff — with no database, no network. | `test_scoring.py` verifies the load-bearing invariant that stale/conflicting data can never reach `HIGH` severity, by calculation, not by running the system. |
-| Integration (`tests/integration/`) | Real HTTP → real service → real PostgreSQL, including authorization, constraints, and transaction rollback. | `test_watchlist_api.py`'s cross-user 404 tests. |
-| Concurrency (`test_concurrency.py`, `test_change_feed_concurrency.py`) | Genuine races, using real threads on separate connections — a single shared session serializes work by definition and cannot exercise a race at all. | 12 threads adding the same symbol simultaneously; exactly one row, every caller succeeds. |
-| Query plans (`test_query_plans.py`) | An index that exists is not an index that gets used — asserts on real `EXPLAIN` output against a loaded table, not just that a migration ran. | The ingest hot path's `ON CONFLICT` arbiter index, not a `Seq Scan`. |
-| Provider contract | A real adapter (gated, `pytest -m network`) plus deterministic fakes for every failure mode in the matrix. | `test_yfinance_provider.py`; `mock_provider.py`'s `StaleProvider`, `TimeoutProvider`, etc. |
-
-**Edge cases and failure modes** are tracked as a single source of truth —
-[docs/reliability.md](docs/reliability.md) maps all 16 rows of the
-product-spec's failure-mode matrix to the exact test that proves each one,
-including honest notes where coverage has a real gap rather than claiming
-completeness it doesn't have. It also records three failures found only by
-deploying to real infrastructure (a managed Postgres connection pooler, a
-split-service deployment) that no local test could have caught — see that
-document's "Deployment" section.
-
-## Deployment
-
-```
-Vercel (frontend)  ──HTTPS/CORS──►  Render Web Service (FastAPI API)  ──psycopg──►  Neon PostgreSQL
-                                                                                            ▲
-                                    Render Background Worker  ───────psycopg───────────────┘
-                                            │
-                                            ▼
-                                       yfinance
-```
-
-- **Frontend** — Vercel, static Vite build. `VITE_API_URL` points at the API.
-- **API** — Render Web Service, `backend/Dockerfile`, Root Directory `backend`. Runs `alembic upgrade head` on every boot (idempotent), then serves.
-- **Worker** — Render Background Worker, `worker/Dockerfile`, Root Directory `.` (repo root — different from the API; see [design-decisions.md](docs/design-decisions.md) #11). Runs `python -m worker.scheduler`, looping forever on `WORKER_INTERVAL_SECONDS`.
-- **Database** — Neon, managed serverless PostgreSQL.
-
-**Why two separate Render services instead of one:** the API and worker have
-different failure and scaling characteristics — a slow ingestion cycle must
-never affect API latency, and a stateless request server's restart policy is
-not the right one for a long-running loop. See
-[architecture.md](docs/architecture.md) §1 and
-[design-decisions.md](docs/design-decisions.md) #15.
-
-**Required environment variables** (both services, see `.env.example` for the complete list with defaults):
-
-```
-DATABASE_URL=postgresql://...        # any managed provider's bare scheme works — see below
-JWT_SECRET=<32+ random bytes>
-ENVIRONMENT=production
-MARKET_PROVIDER=yfinance
-CORS_ORIGINS=https://your-frontend.vercel.app   # API service only
-```
-
-**Two deployment-specific behaviors worth knowing about, both discovered by
-deploying to real managed infrastructure and both now fixed in code** (full
-writeups in [docs/reliability.md](docs/reliability.md)'s Deployment section):
-
-1. `DATABASE_URL` accepts a bare `postgresql://` string exactly as every
-   managed provider (Neon, Render Postgres, Heroku, Supabase) hands it out —
-   the app normalizes the driver internally, so you never need to add
-   `+psycopg` yourself.
-2. The database connection pool sets its statement timeout via a `SET`
-   command rather than a startup parameter, specifically so it works through
-   a pooled endpoint (PgBouncer) — a managed provider's "pooled" connection
-   string, not just its direct one.
 
 ## Layout
 
