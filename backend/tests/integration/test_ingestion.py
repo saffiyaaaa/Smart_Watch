@@ -7,6 +7,7 @@ means these tests exercise the same provider path a demo run would.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -15,7 +16,9 @@ from freezegun import freeze_time
 from sqlalchemy.orm import Session
 from worker.ingestion import ingest_all, ingest_symbol
 
+from app.config import Settings
 from app.domain.market.quote import Quote
+from app.infrastructure.cache import QuoteCache
 from app.infrastructure.database.repositories import daily_bars as bar_repo
 from app.infrastructure.database.repositories import snapshots as snapshot_repo
 from app.infrastructure.providers.exceptions import ProviderUnavailable
@@ -24,9 +27,12 @@ from app.infrastructure.providers.mock_provider import (
     StaleProvider,
     TimeoutProvider,
 )
+from app.models.watchlist import Watchlist
 from tests.conftest import postgres_required
 from tests.fixtures import seed
 from tests.fixtures.fake_providers import (
+    CallCountingProvider,
+    ConcurrencyTrackingProvider,
     HistoryFailsQuoteSucceedsProvider,
     SelectiveFailureProvider,
     SequenceProvider,
@@ -262,3 +268,136 @@ class TestIngestAllDiscoversTrackedSymbols:
 
     async def test_empty_watchlists_produce_no_work(self, db: Session):
         assert await ingest_all(db, MockProvider()) == []
+
+
+class TestIngestAllConcurrency:
+    """The Phase 12 gate: the worker processes symbols concurrently, bounded
+    by settings.worker_symbol_concurrency, instead of one at a time."""
+
+    async def test_concurrent_fetches_are_bounded_by_worker_symbol_concurrency(self, db: Session):
+        alice = seed.make_user(db, email=seed.unique_email())
+        watchlist = seed.make_watchlist(db, user=alice)
+        symbols = ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META"]
+        for symbol in symbols:
+            seed.add_item(db, watchlist=watchlist, symbol=symbol)
+        db.commit()
+
+        provider = ConcurrencyTrackingProvider()
+        settings = Settings(_env_file=None, worker_symbol_concurrency=2)
+
+        results = await ingest_all(db, provider, settings=settings)
+
+        assert {r.symbol for r in results} == set(symbols)
+        assert all(r.outcome == "created" for r in results)
+        # Genuine concurrency happened (more than one in flight at once)...
+        assert provider.max_concurrent > 1
+        # ...but never more than the configured bound.
+        assert provider.max_concurrent <= 2
+
+    async def test_higher_concurrency_bound_allows_more_overlap(self, db: Session):
+        alice = seed.make_user(db, email=seed.unique_email())
+        watchlist = seed.make_watchlist(db, user=alice)
+        symbols = [f"SYM{i}" for i in range(6)]
+        for symbol in symbols:
+            seed.add_item(db, watchlist=watchlist, symbol=symbol)
+        db.commit()
+
+        provider = ConcurrencyTrackingProvider()
+        settings = Settings(_env_file=None, worker_symbol_concurrency=6)
+
+        await ingest_all(db, provider, settings=settings)
+
+        assert provider.max_concurrent == 6
+
+    async def test_concurrent_run_is_faster_than_sequential(self, db: Session):
+        """Compares concurrency=6 against concurrency=1 for the same shape
+        of work, rather than asserting an absolute wall-clock threshold --
+        per-symbol persistence (each symbol upserts ~40 daily bars, one real
+        round trip each) is itself non-trivial and would make a fixed
+        threshold flaky across machines. What must hold regardless of
+        machine speed is that overlapping the artificial provider delay
+        below saves real time compared to not overlapping it; a concurrency
+        regression that reintroduced sequential processing would collapse
+        this ratio to ~1.0.
+        """
+        alice = seed.make_user(db, email=seed.unique_email())
+
+        async def _timed_run(symbols: list[str], concurrency: int) -> float:
+            # get_all_tracked_symbols (what ingest_all works from) returns
+            # every symbol across every watchlist, so the previous run's
+            # watchlist has to be gone before this one starts, or the second
+            # call would ingest both sets and the timings would no longer be
+            # comparable.
+            db.query(Watchlist).filter(Watchlist.user_id == alice.id).delete()
+            db.commit()
+
+            wl = seed.make_watchlist(db, user=alice, name=f"wl-{concurrency}")
+            for symbol in symbols:
+                seed.add_item(db, watchlist=wl, symbol=symbol)
+            db.commit()
+
+            provider = ConcurrencyTrackingProvider(delay_seconds=0.2)
+            settings = Settings(_env_file=None, worker_symbol_concurrency=concurrency)
+
+            started = time.monotonic()
+            results = await ingest_all(db, provider, settings=settings)
+            assert len(results) == len(symbols)
+            return time.monotonic() - started
+
+        sequential_elapsed = await _timed_run([f"SEQ{i}" for i in range(6)], concurrency=1)
+        concurrent_elapsed = await _timed_run([f"CONC{i}" for i in range(6)], concurrency=6)
+
+        assert concurrent_elapsed < sequential_elapsed / 1.4
+
+
+class _FakeRedis:
+    """Minimal in-memory stand-in for redis.asyncio.Redis -- see
+    tests/unit/test_quote_cache.py for why the cache's own logic does not
+    need a live server to verify."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+
+    async def get(self, name: str) -> str | None:
+        return self._store.get(name)
+
+    async def set(self, name: str, value: str, ex: int | None = None) -> None:
+        self._store[name] = value
+
+    async def aclose(self) -> None:
+        pass
+
+
+class TestQuoteCacheAvoidsRepeatedProviderCalls:
+    """The Phase 12 gate: repeated shared quote requests do not
+    unnecessarily hammer the provider, within the cache's TTL."""
+
+    async def test_a_second_ingest_within_the_ttl_reuses_the_cached_quote(self, db: Session):
+        settings = Settings(_env_file=None, cache_enabled=True, cache_quote_ttl_seconds=300)
+        cache = QuoteCache(settings, client=_FakeRedis())
+        provider = CallCountingProvider()
+
+        await ingest_symbol(db, provider, "AAPL", settings=settings, cache=cache)
+        await ingest_symbol(db, provider, "AAPL", settings=settings, cache=cache)
+
+        assert provider.calls["AAPL"] == 1
+
+    async def test_a_disabled_cache_calls_the_provider_every_time(self, db: Session):
+        settings = Settings(_env_file=None, cache_enabled=False)
+        cache = QuoteCache(settings, client=_FakeRedis())
+        provider = CallCountingProvider()
+
+        await ingest_symbol(db, provider, "MSFT", settings=settings, cache=cache)
+        await ingest_symbol(db, provider, "MSFT", settings=settings, cache=cache)
+
+        assert provider.calls["MSFT"] == 2
+
+    async def test_different_symbols_are_cached_independently(self, db: Session):
+        settings = Settings(_env_file=None, cache_enabled=True, cache_quote_ttl_seconds=300)
+        cache = QuoteCache(settings, client=_FakeRedis())
+        provider = CallCountingProvider()
+
+        await ingest_symbol(db, provider, "AAPL", settings=settings, cache=cache)
+        await ingest_symbol(db, provider, "MSFT", settings=settings, cache=cache)
+
+        assert provider.calls == {"AAPL": 1, "MSFT": 1}

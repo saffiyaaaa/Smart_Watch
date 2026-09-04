@@ -105,6 +105,19 @@ class Settings(BaseSettings):
     cache_enabled: bool = False
     cache_quote_ttl_seconds: int = 30
 
+    # ------------------------------------------------------------ rate limiting
+    rate_limit_enabled: bool = True
+    # Registration and login are the endpoints an attacker actually benefits
+    # from hammering (credential stuffing, spam accounts); everything else
+    # sits behind auth already, so only these two carry a dedicated budget.
+    auth_rate_limit_max_requests: int = Field(default=10, ge=1)
+    auth_rate_limit_window_seconds: float = Field(default=60.0, gt=0)
+
+    # ------------------------------------------------------------- request size
+    # Every payload this API accepts is a small JSON object; 1 MB is generous
+    # headroom, not a real limit on legitimate use.
+    max_request_body_bytes: int = Field(default=1_000_000, ge=1)
+
     # --------------------------------------------------------------- frontend
     cors_origins: str = "http://localhost:5173"
 

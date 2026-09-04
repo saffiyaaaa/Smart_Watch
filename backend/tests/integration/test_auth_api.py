@@ -7,6 +7,7 @@ from typing import ClassVar
 import pytest
 from fastapi.testclient import TestClient
 
+from app.infrastructure.rate_limit import InMemoryRateLimiter
 from tests.conftest import postgres_required
 
 pytestmark = [pytest.mark.integration, postgres_required]
@@ -152,3 +153,87 @@ class TestProtectedEndpoints:
         db.flush()
 
         assert client.get("/auth/me", headers=alice["headers"]).status_code == 401
+
+
+class TestRateLimiting:
+    """The Phase 13 gate: /auth/register and /auth/login carry a sensible
+    rate limit. A tiny budget is swapped in directly on app.state (see
+    app/api/deps.py's rate_limit_auth) rather than firing the default 10
+    requests or waiting out the real 60s window -- this is the same limiter
+    instance the dependency reads, just configured for a fast, deterministic
+    test.
+    """
+
+    def test_exceeding_the_login_budget_is_429(self, client: TestClient):
+        client.app.state.auth_rate_limiter = InMemoryRateLimiter(limit=2, window_seconds=60)
+        payload = {"email": "nobody@example.com", "password": "wrong-password"}
+
+        for _ in range(2):
+            r = client.post("/auth/login", json=payload)
+            assert r.status_code != 429
+
+        r = client.post("/auth/login", json=payload)
+        assert r.status_code == 429
+        assert r.json()["error"]["code"] == "rate_limited"
+
+    def test_429_carries_retry_after(self, client: TestClient):
+        client.app.state.auth_rate_limiter = InMemoryRateLimiter(limit=1, window_seconds=30)
+        payload = {"email": "nobody@example.com", "password": "wrong-password"}
+
+        client.post("/auth/login", json=payload)
+        r = client.post("/auth/login", json=payload)
+
+        assert r.status_code == 429
+        retry_after = int(r.headers["retry-after"])
+        assert 0 < retry_after <= 30
+
+    def test_register_and_login_share_one_budget_per_client(self, client: TestClient):
+        """Both endpoints are reachable before any identity exists, so both
+        draw from the same IP-keyed budget -- a script alternating between
+        the two to dodge a per-endpoint limit gains nothing."""
+        client.app.state.auth_rate_limiter = InMemoryRateLimiter(limit=2, window_seconds=60)
+
+        assert client.post(
+            "/auth/register", json={"email": "budget@example.com", "password": "a-good-password"}
+        ).status_code in (201, 409)
+        assert (
+            client.post(
+                "/auth/login", json={"email": "budget@example.com", "password": "a-good-password"}
+            ).status_code
+            != 429
+        )
+
+        r = client.post(
+            "/auth/register", json={"email": "budget2@example.com", "password": "a-good-password"}
+        )
+        assert r.status_code == 429
+
+    def test_a_different_client_ip_has_its_own_budget(self, client: TestClient):
+        """The limiter is keyed by client IP; TestClient's requests always
+        come from the same synthetic address, so this exercises the key
+        function directly rather than through two real connections."""
+        limiter = InMemoryRateLimiter(limit=1, window_seconds=60)
+        client.app.state.auth_rate_limiter = limiter
+
+        payload = {"email": "nobody@example.com", "password": "wrong-password"}
+        client.post("/auth/login", json=payload)  # consumes the one slot for testclient's IP
+
+        limiter.check("some-other-ip")  # a distinct key is unaffected
+
+
+class TestRequestSizeLimit:
+    def test_an_oversized_body_is_rejected(self, client: TestClient):
+        oversized_password = "a" * 2_000_000  # default limit is 1,000,000 bytes
+        r = client.post(
+            "/auth/register",
+            json={"email": "big@example.com", "password": oversized_password},
+        )
+        assert r.status_code == 413
+        assert r.json()["error"]["code"] == "request_too_large"
+
+    def test_a_normal_sized_body_is_unaffected(self, client: TestClient):
+        r = client.post(
+            "/auth/register",
+            json={"email": "normal@example.com", "password": "a-good-password"},
+        )
+        assert r.status_code == 201

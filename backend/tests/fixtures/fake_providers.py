@@ -10,6 +10,8 @@ application code.
 
 from __future__ import annotations
 
+import asyncio
+
 from app.domain.market.quote import Bar, Quote
 from app.infrastructure.providers.base import MarketDataProvider
 from app.infrastructure.providers.mock_provider import MockProvider
@@ -78,3 +80,49 @@ class HistoryFailsQuoteSucceedsProvider(MarketDataProvider):
 
     async def get_daily_history(self, symbol: str, days: int) -> list[Bar]:
         raise self._exception_factory(symbol)
+
+
+class CallCountingProvider(MarketDataProvider):
+    """Counts get_quote calls per symbol -- for proving a cache hit really
+    did skip the provider, not just that the result looked the same."""
+
+    def __init__(self) -> None:
+        self._mock = MockProvider()
+        self.calls: dict[str, int] = {}
+
+    async def get_quote(self, symbol: str) -> Quote:
+        self.calls[symbol] = self.calls.get(symbol, 0) + 1
+        return await self._mock.get_quote(symbol)
+
+    async def get_daily_history(self, symbol: str, days: int) -> list[Bar]:
+        return await self._mock.get_daily_history(symbol, days)
+
+
+class ConcurrencyTrackingProvider(MarketDataProvider):
+    """Records how many `get_quote` calls were ever in flight at once.
+
+    Each call holds a short asyncio.sleep before returning, so overlapping
+    callers genuinely overlap rather than finishing before the next one
+    starts -- the same reasoning as test_concurrency.py's thread barrier,
+    adapted to asyncio: without an artificial delay, a fast fake provider
+    would let calls run to completion one after another even under
+    ingest_all's semaphore, and the test would prove nothing about the bound.
+    """
+
+    def __init__(self, *, delay_seconds: float = 0.05) -> None:
+        self._delay = delay_seconds
+        self._mock = MockProvider()
+        self._in_flight = 0
+        self.max_concurrent = 0
+
+    async def get_quote(self, symbol: str) -> Quote:
+        self._in_flight += 1
+        self.max_concurrent = max(self.max_concurrent, self._in_flight)
+        try:
+            await asyncio.sleep(self._delay)
+            return await self._mock.get_quote(symbol)
+        finally:
+            self._in_flight -= 1
+
+    async def get_daily_history(self, symbol: str, days: int) -> list[Bar]:
+        return await self._mock.get_daily_history(symbol, days)

@@ -1,14 +1,304 @@
+/**
+ * Design system — Smart Market Watchlist (Soft Pastel Financial Dashboard)
+ *
+ * Primary palette:
+ *   #D6C6E1 (Lavender background accent)
+ *   #787198 (Dark muted purple for secondary text, labels, icons, borders)
+ *   #FDD6E5 (Soft pink highlights & alert states)
+ *   #D283AE (Pink primary actions & high-attention indicators)
+ *   #A9C6F1 (Soft blue accents & secondary actions)
+ *   #6F8CBD (Muted blue text & icons)
+ *   #342E4B (Dark primary text on light background)
+ *   #FAF8FC (Main page background)
+ *
+ * Frontend enforces NO client-side severity or freshness scoring.
+ * It applies pastel visual styles strictly to backend payload strings.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
 @import 'tailwindcss';
 
+/* ─── Custom properties ──────────────────────────────────────────────────── */
 :root {
-  color-scheme: light dark;
+  --color-lavender: #D6C6E1;
+  --color-lavender-subtle: #F1EBF5;
+  --color-muted-purple: #787198;
+  --color-text-dark: #342E4B;
+  --color-soft-pink: #FDD6E5;
+  --color-pink-primary: #D283AE;
+  --color-pink-hover: #C472A0;
+  --color-soft-blue: #A9C6F1;
+  --color-blue-hover: #96B7E8;
+  --color-muted-blue: #6F8CBD;
+  --bg-page: #FAF8FC;
+  --bg-surface: #FFFFFF;
+  --border-subtle: #E7E1EE;
+  --border-hover: #D6CDE2;
+
+  /* Severity bands (Soft Pastel) */
+  --sev-watch: #6F8CBD;
+  --sev-watch-bg: #EAF0FA;
+  --sev-important: #9B78B0;
+  --sev-important-bg: #F4EEF8;
+  --sev-high: #D283AE;
+  --sev-high-bg: #FDD6E5;
+
+  /* Freshness bands (Soft Pastel) */
+  --fresh-fresh: #4E9F88;
+  --fresh-fresh-bg: #E6F5F0;
+  --fresh-delayed: #D49B53;
+  --fresh-delayed-bg: #FCF4EA;
+  --fresh-stale: #D283AE;
+  --fresh-stale-bg: #FDD6E5;
+
+  color-scheme: light;
+}
+
+/* ─── Base Reset ─────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
 }
 
 body {
   margin: 0;
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
+  min-height: 100%;
+  font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--bg-page);
+  color: var(--color-text-dark);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Structural Containers (Flat, 1px subtle borders, no drop shadows) ─── */
+.panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+
+.panel-subtle {
+  background: var(--color-lavender-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+
+/* ─── Interactive List Rows ──────────────────────────────────────────────── */
+.clickable-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+  cursor: pointer;
+}
+.clickable-row:hover {
+  border-color: var(--color-pink-primary);
+  background-color: #FCF9FD;
+}
+
+.non-clickable-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
+/* ─── Buttons ────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border-radius: 8px;
+  font-family: 'Montserrat', sans-serif;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  white-space: nowrap;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Primary Action Button (Pink #D283AE) */
+.btn-primary {
+  background: var(--color-pink-primary);
+  color: #FFFFFF;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-pink-hover);
+}
+
+/* Secondary Button (Soft Blue #A9C6F1) */
+.btn-secondary {
+  background: var(--color-soft-blue);
+  color: var(--color-text-dark);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--color-blue-hover);
+}
+
+/* Ghost / Outline Button */
+.btn-ghost {
+  background: transparent;
+  color: var(--color-muted-purple);
+  border: 1px solid var(--border-subtle);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-lavender-subtle);
+  color: var(--color-text-dark);
+  border-color: var(--color-muted-purple);
+}
+
+/* Destructive Button */
+.btn-danger {
+  background: #FFF0F5;
+  color: #C24D7A;
+  border: 1px solid #F5C6D8;
+}
+.btn-danger:hover:not(:disabled) {
+  background: #FDD6E5;
+  color: #A83663;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  border-radius: 6px;
+}
+
+/* ─── Form Inputs ────────────────────────────────────────────────────────── */
+.input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--color-text-dark);
+  font-size: 0.9rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.input::placeholder {
+  color: var(--color-muted-purple);
+  opacity: 0.7;
+}
+.input:focus {
+  border-color: var(--color-pink-primary);
+}
+.input-error {
+  border-color: var(--color-pink-primary) !important;
+  background-color: #FFF8FA;
+}
+
+/* ─── Badges & Tags ──────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Severity Badges */
+.badge-watch {
+  background: var(--sev-watch-bg);
+  color: var(--sev-watch);
+  border: 1px solid rgba(111, 140, 189, 0.25);
+}
+.badge-important {
+  background: var(--sev-important-bg);
+  color: var(--sev-important);
+  border: 1px solid rgba(155, 120, 176, 0.25);
+}
+.badge-high {
+  background: var(--sev-high-bg);
+  color: var(--sev-high);
+  border: 1px solid rgba(210, 131, 174, 0.35);
+}
+
+/* Freshness Badges */
+.badge-fresh {
+  background: var(--fresh-fresh-bg);
+  color: var(--fresh-fresh);
+  border: 1px solid rgba(78, 159, 136, 0.25);
+}
+.badge-delayed {
+  background: var(--fresh-delayed-bg);
+  color: var(--fresh-delayed);
+  border: 1px solid rgba(212, 155, 83, 0.25);
+}
+.badge-stale {
+  background: var(--fresh-stale-bg);
+  color: var(--fresh-stale);
+  border: 1px solid rgba(210, 131, 174, 0.3);
+}
+
+/* ─── Dividers & Labels ─────────────────────────────────────────────────── */
+.divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 0;
+  border: none;
+}
+
+.section-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted-purple);
+}
+
+/* ─── Skeleton loader ────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0% { background-position: -600px 0; }
+  100% { background-position: 600px 0; }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #F3EEF7 25%,
+    #E8E0F0 50%,
+    #F3EEF7 75%
+  );
+  background-size: 600px 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 6px;
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-lavender);
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-muted-purple); }

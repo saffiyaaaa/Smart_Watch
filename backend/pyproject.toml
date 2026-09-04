@@ -21,6 +21,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "httpx>=0.27",
     "yfinance>=0.2.50",
+    "redis>=5.2",
 ]
 
 [project.optional-dependencies]
@@ -74,5 +75,6 @@ asyncio_mode = "auto"
 markers = [
     "integration: requires a live PostgreSQL database",
     "network: reaches a real external market data provider",
+    "redis: requires a live Redis instance",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]

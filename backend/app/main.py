@@ -12,11 +12,17 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.api.errors import register_exception_handlers
+from app.api.middleware import MaxBodySizeMiddleware
 from app.api.routes import auth as auth_routes
+from app.api.routes import stocks as stocks_routes
 from app.api.routes import watchlists as watchlist_routes
 from app.config import Settings, get_settings
+from app.infrastructure.database.session import engine
+from app.infrastructure.rate_limit import InMemoryRateLimiter
 
 logger = logging.getLogger("smw.main")
 
@@ -57,10 +63,20 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
+
+    # Per-app-instance, not a module-level singleton, so each instance --
+    # including a fresh one per test -- starts with a clean budget. See
+    # app/api/deps.py's rate_limit_auth, which reads this off app.state.
+    app.state.auth_rate_limiter = InMemoryRateLimiter(
+        limit=settings.auth_rate_limit_max_requests,
+        window_seconds=settings.auth_rate_limit_window_seconds,
+    )
 
     register_exception_handlers(app)
     app.include_router(auth_routes.router)
     app.include_router(watchlist_routes.router)
+    app.include_router(stocks_routes.router)
 
     @app.get("/health", tags=["ops"])
     def health() -> dict[str, Any]:
@@ -73,11 +89,28 @@ def create_app() -> FastAPI:
     def ready() -> dict[str, Any]:
         """Readiness. Reports dependency health.
 
-        Phase 1 has no dependencies wired yet, so this reports the shape of the
-        eventual response with an empty check set. Phase 9 fills in the database
-        and provider checks and returns 503 when degraded.
+        Probes the database with a lightweight SELECT 1. Returns 200 when all
+        dependencies are reachable and 503 when any are not, per failure mode
+        #11 in docs/product-spec.md. The provider is not checked here because
+        it runs asynchronously in the worker, not in the API request path --
+        a momentarily unreachable provider does not make the API unready.
         """
-        return {"status": "ready", "checks": {}}
+        checks: dict[str, str] = {}
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+        except Exception as exc:
+            logger.warning("readiness check: database unreachable: %s", exc)
+            checks["database"] = "error"
+
+        all_ok = all(v == "ok" for v in checks.values())
+        status_code = 200 if all_ok else 503
+        status_text = "ready" if all_ok else "degraded"
+        return JSONResponse(
+            content={"status": status_text, "checks": checks},
+            status_code=status_code,
+        )
 
     return app
 

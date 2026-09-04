@@ -13,12 +13,16 @@ from __future__ import annotations
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.domain.enums import Freshness
+from app.infrastructure.database.repositories import snapshots as snapshot_repo
 from app.infrastructure.database.repositories import watchlists as wl_repo
 from app.models.user import User
 from app.models.watchlist import Watchlist
@@ -192,5 +196,65 @@ class TestConcurrentRegistration:
         finally:
             cleanup = factory()
             cleanup.execute(text("DELETE FROM users WHERE email = :e"), {"e": email})
+            cleanup.commit()
+            cleanup.close()
+
+
+class TestConcurrentSnapshotIngestion:
+    """The Phase 5/11 gate: two ingestion cycles racing on the exact same
+    observation must not create two rows.
+
+    insert_snapshot's docstring already claims ON CONFLICT DO NOTHING
+    "resolves correctly even across separate worker processes" -- this test
+    is what actually backs that claim under a real race, the way
+    TestConcurrentAddSymbol backs the equivalent claim for watchlist items.
+    In production this race is between the API worker and, someday, a second
+    scheduler instance; a single-session db.flush() test (see
+    test_constraints.py's TestSnapshotIdentity) cannot exercise it because
+    the conflict on one connection can only ever be detected sequentially.
+    """
+
+    def test_simultaneous_identical_observations_create_exactly_one_snapshot(
+        self, db_engine: Engine
+    ):
+        factory = sessionmaker(bind=db_engine, expire_on_commit=False)
+        symbol = f"R{uuid.uuid4().hex[:6].upper()}"
+        ts = datetime(2026, 3, 11, 15, 30, tzinfo=UTC)
+
+        try:
+            results = _run_racing(
+                factory,
+                lambda session, _: snapshot_repo.insert_snapshot(
+                    session,
+                    source="race_test",
+                    symbol=symbol,
+                    price=Decimal("180.00"),
+                    volume=1_000_000,
+                    market_timestamp=ts,
+                    ingest_freshness=Freshness.FRESH,
+                ),
+            )
+
+            assert not [r for r in results if isinstance(r, Exception)]
+            # Exactly one caller got the row back; every other caller's
+            # ON CONFLICT DO NOTHING returned None rather than raising or
+            # silently creating a second row.
+            winners = [r for r in results if r is not None]
+            assert len(winners) == 1
+
+            check = factory()
+            try:
+                count = (
+                    check.execute(
+                        text("SELECT COUNT(*) FROM market_snapshots WHERE symbol = :s"),
+                        {"s": symbol},
+                    )
+                ).scalar()
+                assert count == 1
+            finally:
+                check.close()
+        finally:
+            cleanup = factory()
+            cleanup.execute(text("DELETE FROM market_snapshots WHERE symbol = :s"), {"s": symbol})
             cleanup.commit()
             cleanup.close()

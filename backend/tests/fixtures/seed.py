@@ -58,6 +58,7 @@ def make_snapshot(
     price: str = "180.00",
     volume: int | None = 50_000_000,
     market_timestamp: datetime | None = None,
+    fetched_at: datetime | None = None,
     source: str = SOURCE,
     freshness: Freshness = Freshness.FRESH,
 ) -> MarketSnapshot:
@@ -69,6 +70,8 @@ def make_snapshot(
         market_timestamp=market_timestamp or FIXED_NOW,
         ingest_freshness=freshness.value,
     )
+    if fetched_at is not None:
+        snapshot.fetched_at = fetched_at
     db.add(snapshot)
     db.flush()
     return snapshot

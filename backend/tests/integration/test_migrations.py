@@ -7,6 +7,8 @@ developer machine.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
@@ -51,8 +53,11 @@ def migration_engine():
     admin.dispose()
 
 
+ALEMBIC_INI_PATH = str(Path(__file__).parents[2] / "alembic.ini")
+
+
 def _alembic_config(url: str) -> Config:
-    cfg = Config("alembic.ini")
+    cfg = Config(ALEMBIC_INI_PATH)
     cfg.set_main_option("sqlalchemy.url", url)
     return cfg
 
@@ -101,5 +106,5 @@ def test_migrations_match_the_models(migration_engine):
 def test_single_migration_head():
     """Two heads mean someone branched the migration history, and `upgrade head`
     becomes ambiguous. Cheap to check, painful to discover during a deploy."""
-    heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
+    heads = ScriptDirectory.from_config(Config(ALEMBIC_INI_PATH)).get_heads()
     assert len(heads) == 1, f"expected exactly one migration head, found {heads}"

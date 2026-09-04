@@ -52,6 +52,25 @@ postgres_required = pytest.mark.skipif(
 )
 
 
+def _redis_available() -> bool:
+    try:
+        import redis
+
+        client = redis.from_url(get_settings().redis_url, socket_connect_timeout=3)
+        try:
+            return bool(client.ping())
+        finally:
+            client.close()
+    except Exception:
+        return False
+
+
+redis_required = pytest.mark.skipif(
+    not _redis_available(),
+    reason="Redis not reachable -- run `docker compose up -d redis`",
+)
+
+
 @pytest.fixture(scope="session")
 def db_engine() -> Generator[Engine]:
     """Create a dedicated test database, build the schema, drop it afterwards.

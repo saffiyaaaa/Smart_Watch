@@ -65,11 +65,19 @@ def get_latest(db: Session, symbol: str) -> MarketSnapshot | None:
     Ordered by market_timestamp, never by id. Arrival order is not truth: a
     provider can deliver an older quote after a newer one, and ordering by the
     autoincrement key would let that stale value become "latest".
+
+    fetched_at is the tie-breaker, per docs/product-spec.md section 8 row 6:
+    two sources may legitimately report the identical market_timestamp with
+    different prices (see get_other_sources_at below), and market_timestamp
+    alone does not order those two rows -- without a second key, which one
+    "wins" as latest is whatever order PostgreSQL happens to return equal
+    values in, not the documented "most recent fetched_at wins for display"
+    rule.
     """
     stmt = (
         select(MarketSnapshot)
         .where(MarketSnapshot.symbol == symbol)
-        .order_by(MarketSnapshot.market_timestamp.desc())
+        .order_by(MarketSnapshot.market_timestamp.desc(), MarketSnapshot.fetched_at.desc())
         .limit(1)
     )
     return db.execute(stmt).scalars().first()
@@ -83,6 +91,10 @@ def get_latest_for_symbols(db: Session, symbols: list[str]) -> dict[str, MarketS
     walks ix_market_snapshots_symbol_market_timestamp once and takes the first
     row per symbol. It also keeps a watchlist render at one round trip instead
     of one per symbol.
+
+    fetched_at breaks a market_timestamp tie here too, for the same reason as
+    get_latest above -- DISTINCT ON keeps the first row per symbol under this
+    ORDER BY, so the tie-breaker has to be part of it, not bolted on after.
     """
     if not symbols:
         return {}
@@ -91,7 +103,11 @@ def get_latest_for_symbols(db: Session, symbols: list[str]) -> dict[str, MarketS
         select(MarketSnapshot)
         .where(MarketSnapshot.symbol.in_(symbols))
         .distinct(MarketSnapshot.symbol)
-        .order_by(MarketSnapshot.symbol, MarketSnapshot.market_timestamp.desc())
+        .order_by(
+            MarketSnapshot.symbol,
+            MarketSnapshot.market_timestamp.desc(),
+            MarketSnapshot.fetched_at.desc(),
+        )
     )
     return {row.symbol: row for row in db.execute(stmt).scalars()}
 
